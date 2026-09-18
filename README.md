@@ -68,3 +68,19 @@ dry run with the mock model: read p50 18 ms, whole loop p50 100 ms (80 ms of it 
 
     bun run scripts/bench-read.ts     # book reader vs the SDK: exactness and latency
     bun run scripts/dry-encode.ts     # signs a buy and a sell offline, asserts the calldata matches the SDK
+
+## Where the P&L goes
+
+Every block event is appended to `data/events.jsonl` (`EVENTS_LOG`, empty to disable). Two scripts read it, and `bun test` covers the accounting and the fill simulation.
+
+    bun run scripts/eval.ts [data/events.jsonl | https://backend]   # decision hit rate, fill rate, markout, gas vs spread
+    bun run scripts/audit-sim.ts [data/events.jsonl]                  # dry run: simulated fills vs the real prints on chain
+
+`eval.ts` splits the result into the three things that move it. The model's hit rate: the share of blocks where its own call (the probabilities, not the side the position cap forced) matched the sign of the mid 10, 30 and 100 blocks later; 0.5 is a coin flip. Execution: fills per block and the markout, the mid 10 and 100 blocks after each fill relative to its price, negative when the fill was adversely selected. Costs: gas per block against the spread a fill earns, and the fill rate that would pay for the gas.
+
+The numbers that matter, at 200 MON per order and MON near $0.024:
+
+- A taker order (the version before post-only quotes) pays half the spread, about 2 bps or $0.001, on every block it fills. At 3.3 fills a second that is $12 a day on a $100 bankroll, whatever the model says. That is the whole -800%.
+- A post-only order earns about the same per fill instead, but only when a taker hits it. MON-USDC prints roughly one taker trade every 13 blocks, so the ceiling is a few fills per hundred blocks.
+- Live, gas is 350k limit x 102 gwei = 0.036 MON a block, about $10 an hour, so $0.0009 a block against $0.001 per fill. The trading never covers the gas at this size; the "AI costs less than the gas" line is the honest one. The limit adapts down to the largest observed `gasUsed` plus `GAS_HEADROOM` after `GAS_SAMPLES` landed transactions, which is the only gas lever left once the price floor (100 gwei) and the one-transaction-per-block shape are fixed.
+- Bigger orders (`TRADE_SIZE_MON`) raise the spread income per fill without changing the gas.

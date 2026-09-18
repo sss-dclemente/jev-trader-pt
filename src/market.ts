@@ -79,6 +79,9 @@ export class Market {
   private gasLimit = BN.from(config.gasLimitFallback);
   private useVault = false;
   private pending = new Map<string, Pending>();
+  /** gasUsed of recent landed batchUpdates (newest last). Monad charges the limit, so the limit follows these. */
+  private gasUsed: number[] = [];
+  private gasLimitPinned = false;
 
   get address() { return this.wallet?.address ?? null; }
   private get priceDec() { return log10(this.params.pricePrecision); }
@@ -103,6 +106,7 @@ export class Market {
       this.wallet ? this.marginBalance(this.params.quoteAssetAddress) : Promise.resolve(null),
     ]);
     if (fee.status === "fulfilled") this.feeWei = BN.from(fee.value);
+    this.adaptGasLimit();
     if (vault.status === "fulfilled") this.useVault = vaultActive(vault.value);
     if (mon.status === "fulfilled" && mon.value) this.margin.mon = Number(ethers.utils.formatUnits(mon.value, this.params.baseAssetDecimals.toNumber()));
     if (usdc.status === "fulfilled" && usdc.value) this.margin.usdc = Number(ethers.utils.formatUnits(usdc.value, this.params.quoteAssetDecimals.toNumber()));
@@ -192,6 +196,10 @@ export class Market {
   /** OrderCreated for our address gives the new order id; OrdersCanceled lists what the tx removed. status 0x0: nothing changed on the book. */
   private parseReceipt(r: any, p: Pending): QuoteResult {
     if (r.effectiveGasPrice) this.feeWei = BN.from(r.effectiveGasPrice);
+    if (r.gasUsed && r.status !== "0x0") {
+      this.gasUsed.push(Number(BN.from(r.gasUsed).toString()));
+      if (this.gasUsed.length > config.gasSamples) this.gasUsed.shift();
+    }
     const gasMon = this.gasMon(p.gasLimit, BN.from(r.effectiveGasPrice ?? this.feeWei));
     const me = this.wallet!.address.toLowerCase();
     let orderId: number | null = null;
@@ -255,7 +263,7 @@ export class Market {
    * or two cancels a normal block carries, x1.15. Never in the hot loop. Needs margin funds to succeed.
    */
   private async initGasLimit() {
-    if (config.gasLimit) { this.gasLimit = BN.from(config.gasLimit); }
+    if (config.gasLimit) { this.gasLimit = BN.from(config.gasLimit); this.gasLimitPinned = true; }
     else {
       try {
         const book = await this.readBook();
@@ -269,6 +277,21 @@ export class Market {
     }
     const perBlock = this.gasMon(this.gasLimit, this.feeWei);
     console.log(`gas limit ${this.gasLimit} · maxFee ${config.maxFeeGwei} gwei · priority ${config.priorityFeeGwei} gwei · ~${perBlock.toFixed(4)} MON per block, ~${(perBlock * 12_000).toFixed(0)} MON per hour`);
+  }
+
+  /**
+   * Monad charges gasLimit x price, not gasUsed, so every block pays for the headroom. Off the hot
+   * path (every `refreshBlocks`), once enough landed batchUpdates have been seen, pull the limit down
+   * to the largest gasUsed among them plus `gasHeadroom`. Never raised above the startup limit and
+   * never applied when GAS_LIMIT pins it. A tx that runs out of gas reverts and still pays the limit,
+   * so the headroom stays generous: the cancel count varies by one or two orders per block.
+   */
+  adaptGasLimit() {
+    if (this.gasLimitPinned || this.gasUsed.length < config.gasSamples) return;
+    const want = Math.round(Math.max(...this.gasUsed) * (1 + config.gasHeadroom));
+    if (want >= this.gasLimit.toNumber()) return;
+    console.log(`gas limit ${this.gasLimit} -> ${want} (max gasUsed over ${this.gasUsed.length} txs ${Math.max(...this.gasUsed)})`);
+    this.gasLimit = BN.from(want);
   }
 
   private gasMon(limit: ethers.BigNumber, feeWei: ethers.BigNumber) {
