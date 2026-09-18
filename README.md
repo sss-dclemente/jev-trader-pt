@@ -69,6 +69,13 @@ dry run with the mock model: read p50 18 ms, whole loop p50 100 ms (80 ms of it 
     bun run scripts/bench-read.ts     # book reader vs the SDK: exactness and latency
     bun run scripts/dry-encode.ts     # signs a buy and a sell offline, asserts the calldata matches the SDK
 
+## Bitvavo dry run
+
+    VENUE=bitvavo INTERVAL_MS=5000 BITVAVO_MARKET=BTC-EUR bun run start
+    bun run scripts/eval.ts
+
+Same loop, same model, same accounting, a different clock and venue (`src/bitvavo.ts`): the public WebSocket keeps a local book and the taker prints, a tick every `INTERVAL_MS` stands in for the block, and every tick posts a simulated post-only order one tick inside the touch that fills against real prints crossing it during the next tick. `MAKER_FEE_BPS` (15 at Bitvavo's base tier) is charged on every fill into `totals.feesUsd`, so the P&L answers the only question that matters before opening an account there: does the model's edge per fill beat the fee? `eval.ts` prints fee per fill against spread earned per fill, and the hit rate and markout at 10, 30 and 100 ticks. Nothing is signed or sent; there is no live mode for Bitvavo.
+
 ## Where the P&L goes
 
 Every block event is appended to `data/events.jsonl` (`EVENTS_LOG`, empty to disable). Two scripts read it, and `bun test` covers the accounting and the fill simulation.

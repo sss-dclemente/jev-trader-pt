@@ -1,9 +1,10 @@
 import { appendFileSync, mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 import { config } from "./config";
-import { Market, type Book, type Fill, type Quote, type QuoteResult, type Side } from "./market";
+import type { Book, Fill, Quote, QuoteResult, Side } from "./market";
 import type { Action, Decision, Model, TradeState } from "./model";
 import { TradeFeed, type MakerFill, type TradePrint } from "./trades";
+import type { PrintFeed, Venue } from "./venue";
 
 export interface BlockEvent {
   block: number;
@@ -37,6 +38,8 @@ export interface Totals {
   gasMon: number;
   gasUsd: number;
   realizedUsd: number;
+  /** Maker fees charged on fills (`makerFeeBps`); 0 on Kuru. Quote-currency units, like everything named Usd. */
+  feesUsd: number;
   pnlUsd: number;
   pnlMon: number;
   pnlPct: number;
@@ -65,7 +68,7 @@ export class Trader {
   private mids: number[] = [];
   private busy = false;
   private lastBook: Book | null = null;
-  private trades: TradeFeed | null = null;
+  private trades: PrintFeed | null = null;
   /** Orders we know are resting on the book (live: from receipts; dry run: last block's simulated order). */
   private orders = new Map<number, Resting>();
   /** Live quotes sent but not yet confirmed; they may become resting orders, so they count toward the cap. */
@@ -74,10 +77,10 @@ export class Trader {
   private earlyFills = new Map<number, Fill>();
   private simId = 0;
   private position = { mon: 0, costUsd: 0 }; // signed inventory and its cost basis
-  private totals: Totals = { blocks: 0, decisions: 0, quotes: 0, fills: 0, reverted: 0, lateBlocks: 0, jevUsd: 0, gasMon: 0, gasUsd: 0, realizedUsd: 0, pnlUsd: 0, pnlMon: 0, pnlPct: 0 };
+  private totals: Totals = { blocks: 0, decisions: 0, quotes: 0, fills: 0, reverted: 0, lateBlocks: 0, jevUsd: 0, gasMon: 0, gasUsd: 0, realizedUsd: 0, feesUsd: 0, pnlUsd: 0, pnlMon: 0, pnlPct: 0 };
 
   constructor(
-    private market: Market,
+    private market: Venue,
     private model: Model,
     private onEvent: (e: BlockEvent, timing?: Timing) => void,
     private onFill: (block: number, fill: Fill) => void = () => {},
@@ -86,10 +89,19 @@ export class Trader {
     if (config.eventsLog) mkdirSync(dirname(config.eventsLog), { recursive: true });
   }
 
-  /** Call once the market params are known. Without it `trades` in the state is all zeros and no fills are ever seen. */
+  /** Kuru: call once the market params are known. Without a feed `trades` in the state is all zeros and no fills are ever seen. */
   attachTradeFeed(sizeDec: number) {
     this.trades = new TradeFeed({ market: config.market, url: config.readRpcUrl, sizeDec, maker: this.market.address });
   }
+
+  /** Any other venue's print feed (Bitvavo: the venue object itself). */
+  attachFeed(feed: PrintFeed) {
+    this.trades = feed;
+  }
+
+  /** Order size in base units: MON on Kuru, the base asset elsewhere. */
+  private get size() { return config.venue === "kuru" ? config.tradeSizeMon : config.tradeSizeBase; }
+  private get maxPosition() { return config.venue === "kuru" ? config.maxPositionMon : config.maxPositionBase; }
 
   async onBlock(block: number) {
     this.totals.blocks++;
@@ -122,7 +134,7 @@ export class Trader {
       if (side) {
         decision.action = side;
         const cancel = [...this.orders.keys()].filter((id) => id > 0); // live order ids; simulated orders are negative
-        quote = await this.market.send(block, side, config.tradeSizeMon, book, cancel, side !== wanted);
+        quote = await this.market.send(block, side, this.size, book, cancel, side !== wanted);
         this.totals.quotes++;
         if (quote.status === "sim") {
           // The simulated cancel lands in this block: prints up to and including it can still fill the old order.
@@ -226,9 +238,9 @@ export class Trader {
 
   /** Would this order, and everything already resting on its side, keep us inside the cap and (live) inside margin funds? */
   private allowed(side: Side, book: Book) {
-    const size = config.tradeSizeMon;
+    const size = this.size;
     const exposure = side === "buy" ? this.position.mon + this.restingMon("buy") + size : this.position.mon - this.restingMon("sell") - size;
-    if (Math.abs(exposure) > config.maxPositionMon) return false;
+    if (Math.abs(exposure) > this.maxPosition) return false;
     if (!this.market.wallet) return true;
     // Kuru debits margin when an order is placed, so the balance already excludes what is resting.
     return side === "buy" ? this.market.margin.usdc >= size * book.ask : this.market.margin.mon >= size;
@@ -243,10 +255,10 @@ export class Trader {
     const depth: TradeState["depth"] = {};
     for (const [k, v] of Object.entries(book.depthBps)) depth[k + "bps"] = { bid: round(v.bid, 1), ask: round(v.ask, 1) };
     return {
-      market: "MON-USDC",
+      market: config.venue === "kuru" ? "MON-USDC" : config.bitvavoMarket,
       block,
       horizonBlocks: H,
-      blockMs: 300,
+      blockMs: config.venue === "kuru" ? 300 : config.intervalMs,
       mid: book.mid,
       spreadBps: round(book.spreadBps, 2),
       bookImbalance: round(book.imbalance, 3),
@@ -262,6 +274,7 @@ export class Trader {
 
   private applyFill(f: Fill) {
     if (f.size <= 0) return;
+    this.totals.feesUsd += (f.size * f.price * config.makerFeeBps) / 10_000;
     const signed = f.side === "buy" ? f.size : -f.size;
     const p = this.position;
     if (p.mon === 0 || Math.sign(p.mon) === Math.sign(signed)) {
@@ -286,7 +299,7 @@ export class Trader {
     const t = this.totals;
     t.gasUsd = t.gasMon * book.mid;
     const unrealized = this.unrealizedUsd(book.mid);
-    t.pnlUsd = t.realizedUsd + unrealized - t.gasUsd;
+    t.pnlUsd = t.realizedUsd + unrealized - t.gasUsd - t.feesUsd;
     t.pnlMon = t.pnlUsd / book.mid;
     t.pnlPct = (t.pnlUsd / config.bankrollUsd) * 100;
     const size = Math.abs(this.position.mon);
@@ -302,7 +315,7 @@ export class Trader {
         side: this.position.mon > 0 ? "long" : this.position.mon < 0 ? "short" : "flat",
         size, entryPrice: this.entryPrice(), unrealizedUsd: round(unrealized, 4), unrealizedMon: round(unrealized / book.mid, 4),
       },
-      totals: { ...t, jevUsd: round(t.jevUsd, 6), gasMon: round(t.gasMon, 6), gasUsd: round(t.gasUsd, 6), realizedUsd: round(t.realizedUsd, 4), pnlUsd: round(t.pnlUsd, 4), pnlMon: round(t.pnlMon, 4), pnlPct: round(t.pnlPct, 3) },
+      totals: { ...t, jevUsd: round(t.jevUsd, 6), gasMon: round(t.gasMon, 6), gasUsd: round(t.gasUsd, 6), realizedUsd: round(t.realizedUsd, 4), feesUsd: round(t.feesUsd, 4), pnlUsd: round(t.pnlUsd, 4), pnlMon: round(t.pnlMon, 4), pnlPct: round(t.pnlPct, 3) },
     };
     this.earlyFills.delete(block);
     this.history.push(event);

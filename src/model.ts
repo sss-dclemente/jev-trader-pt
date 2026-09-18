@@ -7,10 +7,10 @@ export type Action = "buy" | "sell" | "hold";
 
 /** What the model sees. Compact, relative, human-readable. */
 export interface TradeState {
-  market: "MON-USDC";
+  market: string; // "MON-USDC" on Kuru, e.g. "BTC-EUR" on Bitvavo
   block: number;
-  horizonBlocks: number; // the question is about the move over this many blocks
-  blockMs: number;
+  horizonBlocks: number; // the question is about the move over this many blocks (ticks off-chain)
+  blockMs: number; // 300 on Monad; `intervalMs` off-chain
   mid: number;
   spreadBps: number;
   bookImbalance: number; // -1 (all asks) .. 1 (all bids), within 1% of mid
@@ -39,21 +39,28 @@ export interface Model {
   decide(state: TradeState): Promise<Decision>;
 }
 
-const QUESTIONS = {
-  direction: {
-    type: "choice",
-    instructions: {
-      question: "Will MON be higher or lower than the current mid after `horizonBlocks` more blocks?",
-      goal: "Make a market in MON-USDC on Kuru. Blocks are ~300ms; `horizonBlocks` (~30 s) is the horizon. The answer picks the side of a post-only limit order of fixed size, one tick inside the best bid or ask, that replaces last block's order. It never crosses the spread: it fills only when a taker hits it. A bid that fills has bought from a seller, so it profits if the mid then rises or holds and loses if the mid keeps falling through it (adverse selection). Same for an ask against a buyer. Pick the side whose fill is most likely to be on the right side of the next `horizonBlocks` blocks.",
-      timing: "The order rests on the book from the next block until the block after, when the next answer replaces it.",
-      inputs: "Taker flow is the strongest signal: `trades.cvdMon` (taker buys minus taker sells over the horizon), `trades.lastSide` and `recentTrades` show who is hitting the book, and a taker on our side is what fills us. `depth` and `book` show resting liquidity per side at several distances from mid; thin depth on one side means price moves easily that way. `returnsBps` and `recentMids` show the path over the horizon. If `allowed.buy` is false the order will be an ask regardless, and vice versa.",
+/** The question, worded for the venue: base/quote names and the clock come from the state. */
+export function questions(state: Pick<TradeState, "market" | "blockMs" | "horizonBlocks">) {
+  const [base, quote] = state.market.split("-") as [string, string];
+  const venue = state.market === "MON-USDC" ? "Kuru" : "Bitvavo";
+  const clock = state.blockMs <= 1000 ? `Blocks are ~${state.blockMs}ms` : `Each tick is ${state.blockMs / 1000} s`;
+  const horizonS = Math.round((state.horizonBlocks * state.blockMs) / 1000);
+  return {
+    direction: {
+      type: "choice",
+      instructions: {
+        question: `Will ${base} be higher or lower than the current mid after \`horizonBlocks\` more ${state.blockMs <= 1000 ? "blocks" : "ticks"}?`,
+        goal: `Make a market in ${base}-${quote} on ${venue}. ${clock}; \`horizonBlocks\` (~${horizonS} s) is the horizon. The answer picks the side of a post-only limit order of fixed size, one tick inside the best bid or ask, that replaces the previous order. It never crosses the spread: it fills only when a taker hits it. A bid that fills has bought from a seller, so it profits if the mid then rises or holds and loses if the mid keeps falling through it (adverse selection). Same for an ask against a buyer. Pick the side whose fill is most likely to be on the right side of the next \`horizonBlocks\`.`,
+        timing: "The order rests on the book from the next block or tick until the one after, when the next answer replaces it.",
+        inputs: "Taker flow is the strongest signal: `trades.cvdMon` (taker buys minus taker sells over the horizon, in base units), `trades.lastSide` and `recentTrades` show who is hitting the book, and a taker on our side is what fills us. `depth` and `book` show resting liquidity per side at several distances from mid; thin depth on one side means price moves easily that way. `returnsBps` and `recentMids` show the path over the horizon. If `allowed.buy` is false the order will be an ask regardless, and vice versa.",
+      },
+      criteria: {
+        buy: "Bid now: mid more likely to be higher after `horizonBlocks`, so a seller hitting the bid is selling before a rise.",
+        sell: "Ask now: mid more likely to be lower after `horizonBlocks`, so a buyer lifting the ask is buying before a fall.",
+      },
     },
-    criteria: {
-      buy: "Bid now: mid more likely to be higher after `horizonBlocks` blocks, so a seller hitting the bid is selling before a rise.",
-      sell: "Ask now: mid more likely to be lower after `horizonBlocks` blocks, so a buyer lifting the ask is buying before a fall.",
-    },
-  },
-} as const;
+  } as const;
+}
 
 /** Real Jev via the AI SDK. Swap-in is the MODEL env var. */
 export class JevModel implements Model {
@@ -62,7 +69,7 @@ export class JevModel implements Model {
 
   async decide(state: TradeState): Promise<Decision> {
     const t0 = performance.now();
-    const r = await experimental_evaluate({ model: this.model, state: state as any, questions: QUESTIONS, maxRetries: 0 });
+    const r = await experimental_evaluate({ model: this.model, state: state as any, questions: questions(state), maxRetries: 0 });
     const a = r.answers.direction;
     const p = a.probabilities ?? { buy: 0, sell: 0, [a.choice]: 1 };
     const buy = p.buy ?? 0, sell = p.sell ?? 0;

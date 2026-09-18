@@ -1,7 +1,9 @@
-import { test, expect, beforeAll } from "bun:test";
+import { test, expect, beforeEach } from "bun:test";
 process.env.EVENTS_LOG = "";
 process.env.DRY_RUN = "true";
+const { config } = await import("./config");
 const { Trader } = await import("./trader");
+beforeEach(() => { config.venue = "kuru"; config.makerFeeBps = 0; config.tradeSizeMon = 200; config.maxPositionMon = 1000; });
 import type { Book, Quote, Side } from "./market";
 import type { Decision, Model, TradeState } from "./model";
 import type { TradePrint } from "./trades";
