@@ -49,4 +49,7 @@ export const config = {
   historySize: 1000,
   /** Every block event is appended here as JSON lines, and every fill as `{type:"fill",block,fill}` since it lands after its block's line (scripts/eval.ts and scripts/audit-sim.ts read it). Empty disables. */
   eventsLog: env("EVENTS_LOG", "data/events.jsonl")!,
+  /** Long-horizon forecast harness (src/horizon.ts): one row per interval, scored later by scripts/eval-horizon.ts. */
+  horizonIntervalMs: Number(env("HORIZON_INTERVAL_MS", "3600000")),
+  horizonLog: env("HORIZON_LOG", "data/horizon.jsonl")!,
 };

@@ -76,6 +76,18 @@ dry run with the mock model: read p50 18 ms, whole loop p50 100 ms (80 ms of it 
 
 Same loop, same model, same accounting, a different clock and venue (`src/bitvavo.ts`): the public WebSocket keeps a local book and the taker prints, a tick every `INTERVAL_MS` stands in for the block, and every tick posts a simulated post-only order one tick inside the touch that fills against real prints crossing it during the next tick. `MAKER_FEE_BPS` (15 at Bitvavo's base tier) is charged on every fill into `totals.feesUsd`, so the P&L answers the only question that matters before opening an account there: does the model's edge per fill beat the fee? `eval.ts` prints fee per fill against spread earned per fill, and the hit rate and markout at 10, 30 and 100 ticks. Nothing is signed or sent; there is no live mode for Bitvavo.
 
+## Long-horizon harness
+
+    MODEL=jev bun run horizon                 # one forecast an hour, on the hour; GET :3000/horizon.jsonl serves the log
+    MODEL=jev bun run horizon --once          # one row, then exit
+    bun run scripts/eval-horizon.ts           # score data/horizon.jsonl (or a URL) against realized candles
+
+The block loop asks Jev a question that speed answers, not judgment: three dry runs at 300 ms to 5 s (Kuru, Bitvavo, mock and Jev) all sit at a coin flip, and the fee or gas per fill is 35x to 200x the spread. `src/horizon.ts` asks the question a human trader can answer: every hour it gathers the last day of Bitvavo hourly candles (returns over 1, 4, 24 h and 7 d, realized vol, position in the day's range, volume against the week), the perp crowd (Hyperliquid and OKX funding, premium, open interest), the Fear and Greed index, the last 24 h of Cointelegraph headlines with their age, and the UTC hour and weekday, then asks whether BTC-EUR is higher or lower after 1, 4 and 24 hours and appends the row to `HORIZON_LOG`. Nothing is traded. Any source that fails becomes null; the row is still written.
+
+`scripts/eval-horizon.ts` scores the rows once their horizon has passed: hit rate with a Wilson 95% interval, Brier score, calibration by confidence, and the P&L of trading every call at the mid net of `ROUND_TRIP_FEE_BPS` (default 50, taker in and out at Bitvavo's base tier) against the long-only baseline on the same rows. The interval is the point: at one row an hour it takes about six weeks of the 24 h horizon before an interval narrower than 10 points is possible, and the 1 h horizon gets there in a week. Edge is real when the whole interval sits above 0.5 and above long-only; a fee of 50 bps needs a mean move in the called direction above that.
+
+To keep it running: a second Railway service from this repo with start command `bun run src/horizon.ts`, `MODEL=jev`, `TYPESAFE_AI_API_KEY`, and a volume mounted at `/app/data` so the log survives deploys. Jev cost is about $0.001 a row.
+
 ## Where the P&L goes
 
 Every block event is appended to `data/events.jsonl` (`EVENTS_LOG`, empty to disable). Two scripts read it, and `bun test` covers the accounting and the fill simulation.
