@@ -30,7 +30,15 @@ export async function loadEvents(src: string): Promise<BlockEvent[]> {
     return (await res.json()) as BlockEvent[];
   }
   const text = await Bun.file(src).text();
-  return text.split("\n").filter(Boolean).map((l) => JSON.parse(l) as BlockEvent);
+  const events: BlockEvent[] = [];
+  const byBlock = new Map<number, BlockEvent>();
+  for (const line of text.split("\n")) {
+    if (!line) continue;
+    const row = JSON.parse(line);
+    if (row.type === "fill") { const e = byBlock.get(row.block); if (e) e.fill = row.fill; continue; } // fills land after their block's line
+    events.push(row); byBlock.set(row.block, row);
+  }
+  return events;
 }
 
 const median = (xs: number[]) => { const s = [...xs].sort((a, b) => a - b); return s.length ? s[Math.floor(s.length / 2)]! : 0; };

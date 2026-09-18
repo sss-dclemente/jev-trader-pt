@@ -36,6 +36,6 @@ export const config = {
   jevUsdPerMTok: 0.042,
   port: Number(env("PORT", "3000")),
   historySize: 1000,
-  /** Every block event is appended here as JSON lines (scripts/eval.ts and scripts/audit-sim.ts read it). Empty disables. */
+  /** Every block event is appended here as JSON lines, and every fill as `{type:"fill",block,fill}` since it lands after its block's line (scripts/eval.ts and scripts/audit-sim.ts read it). Empty disables. */
   eventsLog: env("EVENTS_LOG", "data/events.jsonl")!,
 };

@@ -174,6 +174,7 @@ export class Trader {
       const fill = aggregate(fs);
       const e = this.history.find((h) => h.block === block);
       if (e) e.fill = fill; else this.earlyFills.set(block, fill);
+      if (config.eventsLog) appendFileSync(config.eventsLog, JSON.stringify({ type: "fill", block, fill }) + "\n");
       this.onFill(block, fill);
     }
   }
