@@ -44,13 +44,13 @@ const QUESTIONS = {
     type: "choice",
     instructions: {
       question: "Will MON be higher or lower than the current mid after `horizonBlocks` more blocks?",
-      goal: "Trade MON-USDC on Kuru. Blocks are ~300ms; `horizonBlocks` (~30 s) is the horizon. A decision is made every few blocks and held until the next one. The trade crosses the spread (`spreadBps`), so the move must beat that cost.",
-      timing: "The order executes as an immediate-or-cancel market order in the next block.",
-      inputs: "Taker flow is the strongest signal: `trades.cvdMon` (taker buys minus taker sells over the horizon), `trades.lastSide` and `recentTrades` show who is hitting the book. `depth` and `book` show resting liquidity per side at several distances from mid; thin depth on one side means price moves easily that way. `returnsBps` and `recentMids` show the path over the horizon. If `allowed.buy` is false the trade will be a sell regardless, and vice versa.",
+      goal: "Make a market in MON-USDC on Kuru. Blocks are ~300ms; `horizonBlocks` (~30 s) is the horizon. The answer picks the side of a post-only limit order of fixed size, one tick inside the best bid or ask, that replaces last block's order. It never crosses the spread: it fills only when a taker hits it. A bid that fills has bought from a seller, so it profits if the mid then rises or holds and loses if the mid keeps falling through it (adverse selection). Same for an ask against a buyer. Pick the side whose fill is most likely to be on the right side of the next `horizonBlocks` blocks.",
+      timing: "The order rests on the book from the next block until the block after, when the next answer replaces it.",
+      inputs: "Taker flow is the strongest signal: `trades.cvdMon` (taker buys minus taker sells over the horizon), `trades.lastSide` and `recentTrades` show who is hitting the book, and a taker on our side is what fills us. `depth` and `book` show resting liquidity per side at several distances from mid; thin depth on one side means price moves easily that way. `returnsBps` and `recentMids` show the path over the horizon. If `allowed.buy` is false the order will be an ask regardless, and vice versa.",
     },
     criteria: {
-      buy: "Buy MON now: mid more likely to be higher after `horizonBlocks` blocks, by more than the spread.",
-      sell: "Sell MON now: mid more likely to be lower after `horizonBlocks` blocks, by more than the spread.",
+      buy: "Bid now: mid more likely to be higher after `horizonBlocks` blocks, so a seller hitting the bid is selling before a rise.",
+      sell: "Ask now: mid more likely to be lower after `horizonBlocks` blocks, so a buyer lifting the ask is buying before a fall.",
     },
   },
 } as const;

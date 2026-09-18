@@ -1,4 +1,5 @@
 import { appendFileSync, mkdirSync } from "node:fs";
+import { dirname } from "node:path";
 import { config } from "./config";
 import { Market, type Book, type Fill, type Quote, type QuoteResult, type Side } from "./market";
 import type { Action, Decision, Model, TradeState } from "./model";
@@ -41,7 +42,13 @@ export interface Totals {
   pnlPct: number;
 }
 
-interface Resting { side: Side; price: number; size: number; block: number }
+/**
+ * An order on the book. `block` is when it was placed (it rests from the next block). Simulated
+ * orders keep `cancelBlock`: the block whose replacing quote cancelled them. A print in a block
+ * inside (block, cancelBlock] could still have hit them, so they stay until the trade feed has
+ * seen that block; a live order is dropped the moment its receipt says it was cancelled.
+ */
+interface Resting { side: Side; price: number; size: number; block: number; cancelBlock?: number }
 
 /**
  * Every block: read the book, ask the model buy or sell, and post one post-only limit order on
@@ -63,6 +70,8 @@ export class Trader {
   private orders = new Map<number, Resting>();
   /** Live quotes sent but not yet confirmed; they may become resting orders, so they count toward the cap. */
   private inflight = new Map<string, Quote>();
+  /** Fills whose block event has not been emitted yet (the log poll can beat the model); attached when it is. */
+  private earlyFills = new Map<number, Fill>();
   private simId = 0;
   private position = { mon: 0, costUsd: 0 }; // signed inventory and its cost basis
   private totals: Totals = { blocks: 0, decisions: 0, quotes: 0, fills: 0, reverted: 0, lateBlocks: 0, jevUsd: 0, gasMon: 0, gasUsd: 0, realizedUsd: 0, pnlUsd: 0, pnlMon: 0, pnlPct: 0 };
@@ -74,7 +83,7 @@ export class Trader {
     private onFill: (block: number, fill: Fill) => void = () => {},
     private onQuote: (block: number, quote: Quote) => void = () => {},
   ) {
-    mkdirSync("data", { recursive: true });
+    if (config.eventsLog) mkdirSync(dirname(config.eventsLog), { recursive: true });
   }
 
   /** Call once the market params are known. Without it `trades` in the state is all zeros and no fills are ever seen. */
@@ -112,11 +121,12 @@ export class Trader {
       let quote: Quote | null = null;
       if (side) {
         decision.action = side;
-        const cancel = [...this.orders.keys()].filter((id) => id > 0); // simulated orders have negative ids
+        const cancel = [...this.orders.keys()].filter((id) => id > 0); // live order ids; simulated orders are negative
         quote = await this.market.send(block, side, config.tradeSizeMon, book, cancel, side !== wanted);
         this.totals.quotes++;
         if (quote.status === "sim") {
-          this.orders.clear(); // the simulated cancel
+          // The simulated cancel lands in this block: prints up to and including it can still fill the old order.
+          for (const o of this.orders.values()) o.cancelBlock ??= block;
           this.orders.set(--this.simId, { side, price: quote.price, size: quote.size, block });
         } else if (quote.txHash) {
           this.inflight.set(quote.txHash, quote);
@@ -163,7 +173,7 @@ export class Trader {
     for (const [block, fs] of byBlock) {
       const fill = aggregate(fs);
       const e = this.history.find((h) => h.block === block);
-      if (e) e.fill = fill;
+      if (e) e.fill = fill; else this.earlyFills.set(block, fill);
       this.onFill(block, fill);
     }
   }
@@ -180,14 +190,18 @@ export class Trader {
   }
 
   /**
-   * A simulated order placed at block N is on the book from N+1. A taker sell printing at or below
-   * our bid (or a taker buy at or above our ask) would have taken us first: fill up to the print's size.
+   * A simulated order placed at block N is on the book from N+1 until the block that cancelled it
+   * (inclusive: the cancel is a tx somewhere in that block, and takers ahead of it hit us). A taker
+   * sell printing at or below our bid (or a taker buy at or above our ask) would have taken us
+   * first: fill up to the print's size. Cancelled orders are dropped once the feed is past their
+   * cancel block, so a late poll cannot fill them twice or against a print they never saw.
    */
   private simFills(prints: TradePrint[]): (Fill & { block: number })[] {
     const out: (Fill & { block: number })[] = [];
     for (const p of prints) {
       for (const [id, o] of this.orders) {
         if (p.block <= o.block || o.size <= 0) continue;
+        if (o.cancelBlock !== undefined && p.block > o.cancelBlock) continue;
         const hit = o.side === "buy" ? p.side === "sell" && p.price <= o.price : p.side === "buy" && p.price >= o.price;
         if (!hit) continue;
         const size = Math.min(o.size, p.size);
@@ -196,12 +210,15 @@ export class Trader {
         out.push({ side: o.side, size, price: o.price, txHash: null, orderId: id, simulated: true, block: p.block });
       }
     }
+    const seen = this.trades?.lastBlock ?? 0;
+    for (const [id, o] of this.orders) if (o.cancelBlock !== undefined && o.cancelBlock <= seen) this.orders.delete(id);
     return out;
   }
 
+  /** Size on the book on one side: resting orders (not ones already cancelled) plus live quotes still in flight. */
   private restingMon(side: Side) {
     let mon = 0;
-    for (const o of this.orders.values()) if (o.side === side) mon += o.size;
+    for (const o of this.orders.values()) if (o.side === side && o.cancelBlock === undefined) mon += o.size;
     for (const q of this.inflight.values()) if (q.side === side) mon += q.size;
     return mon;
   }
@@ -278,7 +295,7 @@ export class Trader {
         ? { action: "hold", probabilities: { buy: 0, sell: 0, hold: 1 }, upIn10: 0.5, latencyMs: 0, late: true }
         : decision && { action: decision.action, probabilities: decision.probabilities, upIn10: decision.upIn10, latencyMs: Math.round(decision.latencyMs), late: false },
       quote,
-      fill: null,
+      fill: this.earlyFills.get(block) ?? null,
       resting: { bidMon: round(this.restingMon("buy"), 1), askMon: round(this.restingMon("sell"), 1) },
       position: {
         side: this.position.mon > 0 ? "long" : this.position.mon < 0 ? "short" : "flat",
@@ -286,9 +303,10 @@ export class Trader {
       },
       totals: { ...t, jevUsd: round(t.jevUsd, 6), gasMon: round(t.gasMon, 6), gasUsd: round(t.gasUsd, 6), realizedUsd: round(t.realizedUsd, 4), pnlUsd: round(t.pnlUsd, 4), pnlMon: round(t.pnlMon, 4), pnlPct: round(t.pnlPct, 3) },
     };
+    this.earlyFills.delete(block);
     this.history.push(event);
     if (this.history.length > config.historySize) this.history.shift();
-    appendFileSync("data/events.jsonl", JSON.stringify(event) + "\n");
+    if (config.eventsLog) appendFileSync(config.eventsLog, JSON.stringify(event) + "\n");
     this.onEvent(event, timing);
   }
 }

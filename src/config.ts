@@ -22,6 +22,9 @@ export const config = {
   // Monad charges gas on the LIMIT, so never estimate per block: estimate once at init (or override) and hardcode.
   gasLimit: num("GAS_LIMIT"),
   gasLimitFallback: 350_000, // batchUpdate: one cancel + one post-only place measured at ~282k for the place alone
+  /** After this many landed txs, the limit drops to max(gasUsed) x (1 + headroom). Monad charges the limit, so headroom is paid every block. */
+  gasSamples: Number(env("GAS_SAMPLES", "50")),
+  gasHeadroom: Number(env("GAS_HEADROOM", "0.15")),
   // EIP-1559 type-2 only. Effective price = base + priority, so a high static cap is free.
   maxFeeGwei: Number(env("MAX_FEE_GWEI", "400")),
   priorityFeeGwei: Number(env("PRIORITY_FEE_GWEI", "2")), // Monad hardcodes eth_maxPriorityFeePerGas at 2
@@ -33,4 +36,6 @@ export const config = {
   jevUsdPerMTok: 0.042,
   port: Number(env("PORT", "3000")),
   historySize: 1000,
+  /** Every block event is appended here as JSON lines (scripts/eval.ts and scripts/audit-sim.ts read it). Empty disables. */
+  eventsLog: env("EVENTS_LOG", "data/events.jsonl")!,
 };
