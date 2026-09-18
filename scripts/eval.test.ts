@@ -8,7 +8,7 @@ const ev = (block: number, mid: number, buy: number, fill?: { side: "buy" | "sel
   quote: { side: buy >= 0.5 ? "buy" : "sell", price: mid, size: 200, txHash: null, gasMon: 0, cancel: [], status: "sim", orderId: null, capped: false },
   fill: fill ? { ...fill, size: 200, txHash: null, orderId: 1, simulated: true } : null,
   resting: { bidMon: 0, askMon: 0 }, position: { side: "flat", size: 0, entryPrice: null, unrealizedUsd: 0, unrealizedMon: 0 },
-  totals: { blocks: block, decisions: block, quotes: block, fills: 0, reverted: 0, lateBlocks: 0, jevUsd: 0, gasMon: 0, gasUsd, realizedUsd: 0, pnlUsd: -gasUsd, pnlMon: 0, pnlPct: -gasUsd },
+  totals: { blocks: block, decisions: block, quotes: block, fills: 0, reverted: 0, lateBlocks: 0, jevUsd: 0, gasMon: 0, gasUsd, realizedUsd: 0, feesUsd: 0, pnlUsd: -gasUsd, pnlMon: 0, pnlPct: -gasUsd },
 });
 
 test("hit rate uses the model's call against the mid H blocks later", () => {

@@ -1,17 +1,20 @@
 import { config } from "./config";
 import { startBlockFeed } from "./chain";
 import { Market } from "./market";
+import { BitvavoVenue, startTickClock } from "./bitvavo";
 import { createModel } from "./model";
 import { Trader } from "./trader";
 import { log10 } from "./book";
 import { startServer } from "./server";
 
-const market = new Market();
+const kuru = config.venue === "kuru" ? new Market() : null;
+const bitvavo = kuru ? null : new BitvavoVenue();
+const market = (kuru ?? bitvavo)!;
 await market.init();
 const model = createModel();
 
 const server = startServer(
-  { model: model.name, wallet: market.address, dryRun: config.dryRun, market: config.market, startedAt: Date.now() },
+  { model: model.name, wallet: market.address, dryRun: kuru ? config.dryRun : true, market: kuru ? config.market : config.bitvavoMarket, startedAt: Date.now() },
   () => trader.history,
 );
 const trader = new Trader(
@@ -35,7 +38,12 @@ const trader = new Trader(
     if (quote.status !== "placed") console.log(`#${block} ${quote.status.toUpperCase()} ${quote.side} @ ${quote.price.toFixed(6)} gas ${quote.gasMon.toFixed(6)} MON ${quote.txHash}`);
   },
 );
-trader.attachTradeFeed(log10(market.params.sizePrecision));
-
-console.log(`jev-trader · model=${model.name} · post-only ${config.quoteInsideTicks} tick inside the touch · horizon ${config.horizonBlocks} blocks · ${config.dryRun ? "DRY RUN" : `wallet ${market.address}`} · market ${config.market} · read ${config.readRpcUrl} · :${config.port}`);
-startBlockFeed((block) => trader.onBlock(block));
+if (kuru) {
+  trader.attachTradeFeed(log10(kuru.params.sizePrecision));
+  console.log(`jev-trader · kuru · model=${model.name} · post-only ${config.quoteInsideTicks} tick inside the touch · horizon ${config.horizonBlocks} blocks · ${config.dryRun ? "DRY RUN" : `wallet ${market.address}`} · market ${config.market} · read ${config.readRpcUrl} · :${config.port}`);
+  startBlockFeed((block) => trader.onBlock(block));
+} else {
+  trader.attachFeed(bitvavo!);
+  console.log(`jev-trader · bitvavo ${config.bitvavoMarket} · model=${model.name} · DRY RUN · tick ${config.intervalMs} ms · horizon ${config.horizonBlocks} ticks · size ${config.tradeSizeBase} · maker fee ${config.makerFeeBps} bps · :${config.port}`);
+  startTickClock(bitvavo!, (tick) => trader.onBlock(tick));
+}

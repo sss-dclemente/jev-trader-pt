@@ -2,6 +2,17 @@ const env = (key: string, fallback?: string) => process.env[key] ?? fallback;
 const num = (key: string) => (env(key) ? Number(env(key)) : undefined);
 
 export const config = {
+  /** kuru: Monad blocks, on-chain orders. bitvavo: a tick every `intervalMs`, dry run only, maker fee per fill. */
+  venue: env("VENUE", "kuru") as "kuru" | "bitvavo",
+  intervalMs: Number(env("INTERVAL_MS", "5000")),
+  bitvavoMarket: env("BITVAVO_MARKET", "BTC-EUR")!,
+  bitvavoRest: env("BITVAVO_REST", "https://api.bitvavo.com/v2")!,
+  bitvavoWs: env("BITVAVO_WS", "wss://ws.bitvavo.com/v2/")!,
+  /** Order size in base units on bitvavo (BTC on BTC-EUR); Kuru keeps TRADE_SIZE_MON. */
+  tradeSizeBase: Number(env("TRADE_SIZE_BASE", "0.001")),
+  maxPositionBase: Number(env("MAX_POSITION_BASE", "0.005")),
+  /** Charged on every fill (bitvavo base tier: 15 maker, 25 taker). 0 on Kuru. */
+  makerFeeBps: Number(env("MAKER_FEE_BPS", env("VENUE") === "bitvavo" ? "15" : "0")),
   rpcUrl: env("RPC_URL", "https://rpc.monad.xyz")!, // sends, receipts, nonce, gas estimation
   readRpcUrl: env("READ_RPC_URL", "https://rpc.monad.xyz")!, // book reads + eth_blockNumber polling + trade logs
   wsUrl: env("WS_URL"), // optional; polling backstop always runs

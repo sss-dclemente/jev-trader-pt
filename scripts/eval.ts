@@ -19,7 +19,7 @@ export interface Report {
   hitRate: Record<string, { n: number; hit: number; meanSignedBps: number }>;
   spreadBpsMedian: number;
   markoutBps: Record<string, { n: number; mean: number }>;
-  realizedUsd: number; unrealizedUsd: number; gasUsd: number; jevUsd: number; pnlUsd: number; pnlPct: number;
+  realizedUsd: number; unrealizedUsd: number; gasUsd: number; feesUsd: number; jevUsd: number; pnlUsd: number; pnlPct: number;
   gasUsdPerBlock: number; spreadUsdPerFill: number; breakEvenFillsPerBlock: number | null;
 }
 
@@ -96,7 +96,7 @@ export function evaluate(events: BlockEvent[]): Report {
     hitRate, spreadBpsMedian: r(spreadBpsMedian, 2), markoutBps,
     realizedUsd: r((last?.realizedUsd ?? 0) - (first?.realizedUsd ?? 0), 4),
     unrealizedUsd: r(events.at(-1)?.position.unrealizedUsd ?? 0, 4),
-    gasUsd: r(gasUsd, 4), jevUsd: r((last?.jevUsd ?? 0) - (first?.jevUsd ?? 0), 4),
+    gasUsd: r(gasUsd, 4), feesUsd: r((last?.feesUsd ?? 0) - (first?.feesUsd ?? 0), 4), jevUsd: r((last?.jevUsd ?? 0) - (first?.jevUsd ?? 0), 4),
     pnlUsd: r((last?.pnlUsd ?? 0) - (first?.pnlUsd ?? 0), 4), pnlPct: r((last?.pnlPct ?? 0) - (first?.pnlPct ?? 0), 2),
     gasUsdPerBlock: r(gasUsdPerBlock, 6), spreadUsdPerFill: r(spreadUsdPerFill, 6),
     breakEvenFillsPerBlock: spreadUsdPerFill > 0 ? r(gasUsdPerBlock / spreadUsdPerFill, 4) : null,
@@ -112,5 +112,6 @@ if (import.meta.main) {
   console.log(JSON.stringify(rep, null, 2));
   console.log(`\nhit rate: share of decided blocks where the model's call matched the sign of the mid move H blocks later (0.5 = coin flip)`);
   console.log(`markout: mean mid move H blocks after a fill, in bps in our favour (negative = adverse selection)`);
+  if (rep.fills) console.log(`fees ${rep.feesUsd} over ${rep.fills} fills = ${r(rep.feesUsd / rep.fills, 6)} per fill vs ~${rep.spreadUsdPerFill} spread earned per fill`);
   if (rep.breakEvenFillsPerBlock !== null) console.log(`gas ${rep.gasUsdPerBlock} USD/block vs ~${rep.spreadUsdPerFill} USD per fill: needs ${rep.breakEvenFillsPerBlock} fills/block to cover gas, observed ${rep.fillsPerBlock}`);
 }

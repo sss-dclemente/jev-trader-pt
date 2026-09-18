@@ -208,7 +208,15 @@ export function buildBook(l2Hex: string, params: BookParams, vault?: VaultParams
   const l2 = decodeL2Book(l2Hex, log10(params.pricePrecision), log10(params.sizePrecision));
   const { bids, asks } = formatLevels(l2, params, vault);
   if (!bids.length || !asks.length) throw new Error(`empty book side at block ${l2.block} (bids=${bids.length} asks=${asks.length})`);
-  const bid = bids[0]![0], ask = asks[asks.length - 1]![0];
+  return bookStats(l2.block, bids, [...asks].reverse());
+}
+
+/**
+ * Mid, spread, imbalance (within 1% of mid), depth bands and top 5 levels from two sides given
+ * best first. Venue-independent: Kuru and Bitvavo books both end up here.
+ */
+export function bookStats(block: number, bids: Level[], asks: Level[]): Book {
+  const bid = bids[0]![0], ask = asks[0]![0];
   const mid = (bid + ask) / 2;
   const near = (levels: Level[]) => levels.filter((l) => Math.abs(l[0] - mid) / mid < 0.01).reduce((s, l) => s + l[1], 0);
   const bidDepth = near(bids), askDepth = near(asks);
@@ -216,10 +224,10 @@ export function buildBook(l2Hex: string, params: BookParams, vault?: VaultParams
   const depthBps: Book["depthBps"] = {};
   for (const b of [10, 25, 50]) depthBps[String(b)] = { bid: within(bids, b), ask: within(asks, b) };
   return {
-    block: l2.block, bid, ask, mid,
+    block, bid, ask, mid,
     spreadBps: ((ask - bid) / mid) * 10_000,
     imbalance: bidDepth + askDepth ? (bidDepth - askDepth) / (bidDepth + askDepth) : 0,
-    levels: { bids: bids.slice(0, 5), asks: asks.slice(-5).reverse() },
+    levels: { bids: bids.slice(0, 5), asks: asks.slice(0, 5) },
     depthBps,
   };
 }
